@@ -18,10 +18,10 @@
 const CARD_ID = 2695; // the "picking" question
 
 export default async function handler(req, res) {
-  const base = (process.env.METABASE_URL || '').replace(/\/+$/, '');
+  const base = (process.env.METABASE_URL || process.env.METABASE_HOST || '').replace(/\/+$/, '');
   const key  = process.env.METABASE_API_KEY;
   if (!base || !key) {
-    res.status(500).json({ error: 'Missing METABASE_URL or METABASE_API_KEY environment variables' });
+    res.status(500).json({ error: 'Missing METABASE_URL (or METABASE_HOST) or METABASE_API_KEY environment variables' });
     return;
   }
 
