@@ -105,6 +105,7 @@
   .st.ship{background:rgba(80,140,255,.16);color:#7ea8ff}
   .st.ext{background:rgba(147,102,255,.16);color:#a78bff}
   .st.issue{background:rgba(148,163,184,.16);color:#9aa4b2}
+  .st.dataissue{background:rgba(255,150,50,.18);color:#ff9f40}
   .prg{display:inline-block;font-size:13px;font-weight:800;padding:5px 12px;border-radius:999px;background:var(--surface2);color:var(--muted)}
   .prg.done{background:rgba(34,214,105,.16);color:#5fe08a}
   .prg.done-f{background:rgba(239,68,68,.16);color:#ff8585}
@@ -421,7 +422,7 @@ const USERS={
   trevor: {pw:'grove751', role:'employee', name:'Trevor H.'}
 };
 const TEAM=Object.keys(USERS);
-const PICKABLE=['pending_external_checkout','pending_shipping'];
+const PICKABLE=['pending_external_checkout','pending_shipping','pending_data_issue'];
 const PLAYERS=['Najee Harris','Tyjae Spears','Puka Nacua','Umbreon ex','Wigglytuff','Baxcalibur',
   'Cornerstone Mask Ogerpon ex','Umbreon V','Mega Latias ex','Jayden Daniels','Michael Jordan',
   "Ja'Marr Chase",'Shohei Ohtani','Kon Knueppel','Oneil Cruz','Justin Jefferson','Mega Charizard X ex',
@@ -481,7 +482,7 @@ function mapRow(r,i){
     bin_name: g('bin_name','bin_label')||'',
     slot: Number(g('slot','slot_number')||0),
     player_name: g('player_name','player','subject')||'',
-    ac: g('ac','8ac','8AC','ac_number')||'',
+    ac: g('8ac_number','ac','8ac','8AC','ac_number','8ac_no')||'',
     in_process_days: Number(g('in_process_days','ipd','days_in_process')||0)
   };
 }
@@ -531,7 +532,7 @@ const todayPT=()=>ptDateStr(new Date());
 const $=id=>document.getElementById(id);
 const daysClass=d=>d<=2?'d-lo':(d<=4?'d-md':'d-hi');
 const stPretty=s=>s.replace(/_/g,' ').replace(/\b\w/g,m=>m.toUpperCase());
-const stClass=s=>s==='pending_shipping'?'ship':(s==='pending_external_checkout'?'ext':'issue');
+const stClass=s=>s==='pending_shipping'?'ship':(s==='pending_external_checkout'?'ext':(s==='pending_data_issue'?'dataissue':'issue'));
 function fmtDur(ms){const s=Math.round(ms/1000),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
   return h>0?h+'h '+m+'m':(m>0?m+'m '+sec+'s':sec+'s');}
 const shortDate=ds=>new Date(ds+'T00:00:00').toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'});
