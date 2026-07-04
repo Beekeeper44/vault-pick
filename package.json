@@ -1,0 +1,18 @@
+{
+  "name": "vault-pick",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Arena Club warehouse card-picking app — static front-end, Vercel serverless API, Metabase reads (#2695) + Neon Postgres storage.",
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod",
+    "seed": "node scripts/seed.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
