@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Vault Pick</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <style>
   :root{
     --bg:#0a0e14; --surface:#0f141c; --surface2:#141b25; --line:#1e2733; --line2:#161d27;
@@ -106,6 +107,23 @@
   .st.ext{background:rgba(147,102,255,.16);color:#a78bff}
   .st.issue{background:rgba(148,163,184,.16);color:#9aa4b2}
   .st.dataissue{background:rgba(255,150,50,.18);color:#ff9f40}
+  /* scan-to-pick */
+  tr.ondeck td{background:rgba(34,214,105,.07);border-top:2px solid var(--accent);border-bottom:2px solid var(--accent)}
+  tr.ondeck td:first-child{border-left:2px solid var(--accent)}
+  tr.ondeck td:last-child{border-right:2px solid var(--accent)}
+  @keyframes rowflash{0%{background:rgba(34,214,105,.55)}100%{background:transparent}}
+  tr.flash td{animation:rowflash .9s ease-out}
+  .scanpanel{border:1px solid rgba(34,214,105,.4);background:rgba(34,214,105,.05);border-radius:14px;padding:12px;margin:0 0 16px}
+  .scanpanel.hidden{display:none}
+  .scanpanel-top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
+  .scanexp{font-family:var(--mono);color:var(--accent);font-weight:800;font-size:14px}
+  #scanReader{width:min(88%,340px);margin:0 auto;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#000}
+  .scanfeed{min-height:24px;font-family:var(--mono);font-weight:800;font-size:14px;margin-top:10px;text-align:center}
+  .scanfeed.ok{color:var(--accent)} .scanfeed.bad{color:#ff5b6e}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:1200;padding:12px 18px;border-radius:12px;font-family:var(--mono);font-weight:800;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.5);opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast.show{opacity:1}
+  .toast.ok{background:rgba(34,214,105,.16);color:var(--accent);border:1px solid rgba(34,214,105,.4)}
+  .toast.bad{background:rgba(255,91,110,.16);color:#ff5b6e;border:1px solid rgba(255,91,110,.4)}
   .prg{display:inline-block;font-size:13px;font-weight:800;padding:5px 12px;border-radius:999px;background:var(--surface2);color:var(--muted)}
   .prg.done{background:rgba(34,214,105,.16);color:#5fe08a}
   .prg.done-f{background:rgba(239,68,68,.16);color:#ff8585}
@@ -771,14 +789,34 @@ function openBinModal(bid){
   if(!binTiming[bid]) binTiming[bid]={start:new Date()};   // Tracker clock starts on open
   renderBinModal();$('binModal').classList.remove('hidden');renderPick();
 }
-function closeBinModal(){modalBin=null;$('binModal').classList.add('hidden');}
+function closeBinModal(){modalBin=null;$('binModal').classList.add('hidden');if(scanState.active)stopScan();}
 
-function renderBinModal(){
-  const bid=modalBin; const cards=binMap[bid]||[]; if(!cards.length){closeBinModal();return;}
-  const name=cards[0].bin_name, pr=binProgress(cards), done=isDoneToday(bid);
-  const rows=cards.map(c=>{
-    const s=pickState[c.id];
-    return `<tr class="${s||''}">
+/* ===== SCAN-TO-PICK (camera + 8AC matching) ===== */
+const scanState={active:false, instance:null, last:'', lastAt:0, ondeckAc:''};
+// Normalize an 8AC: drop the "8ac" prefix and any leading zeros, keep the core digits.
+// e.g. "8ac003522491" -> "3522491", "3522491" -> "3522491"
+function coreAc(v){
+  let s=String(v==null?'':v).toLowerCase();
+  s=s.replace(/8ac0*/g,'');   // remove 8ac prefix + zeros right after it
+  s=s.replace(/\D+/g,'');     // digits only
+  s=s.replace(/^0+/,'');      // drop remaining leading zeros
+  return s;
+}
+function beep(ok){try{const a=new (window.AudioContext||window.webkitAudioContext)();const o=a.createOscillator(),g=a.createGain();
+  o.connect(g);g.connect(a.destination);o.type='sine';o.frequency.value=ok?880:220;g.gain.value=.12;
+  o.start();o.stop(a.currentTime+ (ok?.12:.28));}catch(e){}}
+let toastT=null;
+function toast(msg,ok){let el=$('vpToast'); if(!el){el=document.createElement('div');el.id='vpToast';document.body.appendChild(el);}
+  el.className='toast '+(ok?'ok':'bad')+' show'; el.textContent=msg;
+  clearTimeout(toastT); toastT=setTimeout(()=>{el.className='toast '+(ok?'ok':'bad');},1900);}
+function setScanFeed(msg,ok){const f=$('scanFeed'); if(f){f.textContent=msg||''; f.className='scanfeed '+(msg?(ok?'ok':'bad'):'');}}
+function updateScanHint(){const e=$('scanExpect'); if(!e)return;
+  e.textContent = scanState.ondeckAc ? ('Next: '+scanState.ondeckAc+'  (core '+coreAc(scanState.ondeckAc)+')') : 'All cards picked ✓';}
+function binRowsHtml(cards){
+  const ondeckId=(cards.find(c=>pickState[c.id]!=='picked'&&pickState[c.id]!=='flagged')||{}).id;
+  scanState.ondeckAc = ondeckId ? (cards.find(c=>c.id===ondeckId)||{}).ac : '';
+  return cards.map(c=>{const s=pickState[c.id];
+    return `<tr id="row-${c.id}" class="${s||''} ${c.id===ondeckId?'ondeck':''}">
       <td><a class="clickme" href="${c.url}" target="_blank" rel="noopener">Click Me</a></td>
       <td><div class="qr" id="mqr-${c.id}" data-card="${c.id}"></div></td>
       <td class="mono">${c.order_number}</td>
@@ -790,8 +828,63 @@ function renderBinModal(){
       <td style="white-space:nowrap">
         <button class="pk ${s==='picked'?'on':''}" data-pick="${c.id}">✓ Picked</button>
         <button class="fl ${s==='flagged'?'on':''}" data-flag="${c.id}">⚑ Flagged</button>
-      </td></tr>`;
-  }).join('');
+      </td></tr>`;}).join('');
+}
+// In-place refresh of the bin table (used during scanning so the live camera isn't torn down)
+function updateBinTable(){
+  const bid=modalBin; const cards=binMap[bid]||[]; if(!cards.length)return;
+  const tb=$('binTbody'); if(tb){ tb.innerHTML=binRowsHtml(cards);
+    cards.forEach(c=>{const el=$('mqr-'+c.id);if(!el)return;el.innerHTML='';
+      try{new QRCode(el,{text:c.url,width:58,height:58,correctLevel:QRCode.CorrectLevel.L});}catch(e){}}); }
+  const pr=binProgress(cards); const pe=$('binProg'); if(pe)pe.textContent=(pr.p+pr.f)+'/'+pr.t;
+  updateScanHint();
+}
+async function startScan(){
+  const panel=$('scanPanel'); if(!panel){return;}
+  if(!window.Html5Qrcode){toast('Scanner not loaded — check your connection',false);return;}
+  panel.classList.remove('hidden'); scanState.active=true; setScanFeed(''); updateScanHint();
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+  try{
+    scanState.instance=new Html5Qrcode('scanReader',{verbose:false});
+    await scanState.instance.start({facingMode:'environment'},{fps:10,qrbox:{width:240,height:240}},onScanHit,()=>{});
+  }catch(err){
+    setScanFeed('Camera unavailable: '+(err&&err.message?err.message:err),false);
+    toast('Camera error — use the manual ✓ buttons',false);
+  }
+}
+async function stopScan(){
+  scanState.active=false;
+  try{ if(scanState.instance){ await scanState.instance.stop(); scanState.instance.clear(); } }catch(e){}
+  scanState.instance=null;
+  const panel=$('scanPanel'); if(panel){panel.classList.add('hidden'); const r=$('scanReader'); if(r)r.innerHTML='';}
+}
+function onScanHit(text){
+  const now=Date.now();
+  if(text===scanState.last && now-scanState.lastAt<1600) return;   // debounce repeats
+  scanState.last=text; scanState.lastAt=now;
+  const core=coreAc(text);
+  const cards=binMap[modalBin]||[];
+  if(!core){ setScanFeed('Unreadable code',false); beep(false); return; }
+  let target=cards.find(c=>pickState[c.id]!=='picked' && coreAc(c.ac)===core);
+  if(!target){
+    const dup=cards.find(c=>coreAc(c.ac)===core);
+    if(dup){ setScanFeed('Already picked · '+core, true); beep(true); }
+    else{ setScanFeed('No match in this bin · '+core, false); beep(false); }
+    return;
+  }
+  pickState[target.id]='picked'; logEvent(target,'picked');
+  persist(()=>DB.pick(target.id,target.bin_id,'picked',target));
+  beep(true); setScanFeed('✓ Picked slot '+target.slot+' · '+core, true);
+  updateBinTable(); renderPick();
+  const row=$('row-'+target.id); if(row){row.classList.add('flash'); setTimeout(()=>{const r=$('row-'+target.id);if(r)r.classList.remove('flash');},900);}
+  const left=(binMap[modalBin]||[]).filter(c=>pickState[c.id]!=='picked'&&pickState[c.id]!=='flagged').length;
+  if(left===0){ setScanFeed('All cards picked ✓ — Complete bin', true); toast('All picked — hit Complete bin', true); setTimeout(stopScan,1200); }
+}
+
+function renderBinModal(){
+  const bid=modalBin; const cards=binMap[bid]||[]; if(!cards.length){closeBinModal();return;}
+  const name=cards[0].bin_name, pr=binProgress(cards), done=isDoneToday(bid);
+  const rows=binRowsHtml(cards);
   const logs=(binLogs[bid]||[]).map(l=>`<div class="logrow"><span class="lu">${l.user}</span><span class="lt">${l.time}</span><span class="ln">${l.note}</span></div>`).join('')||'<div class="logrow" style="color:var(--muted)">No notes yet.</div>';
   const who=assignedTo[bid]||groupAssigned[groupOf(bid)]||null, mine=who===currentUser;
   const banner=done?`<div class="donebanner">✓ Bin completed for ${binDone[bid].date} at ${binDone[bid].time} — by ${binDone[bid].user}</div>`:'';
@@ -801,7 +894,7 @@ function renderBinModal(){
       <div class="scanbin"><div class="scanqr" id="binScanQR"></div><span>SCAN BIN</span></div>
       <div class="bm-headL">
         <h2>Bin ${bid} · ${name}</h2>
-        <div class="sub"><b>${cards.length}</b> cards to pick · sorted by slot ↑ · progress <b>${pr.p+pr.f}/${pr.t}</b></div>
+        <div class="sub"><b>${cards.length}</b> cards to pick · sorted by slot ↑ · progress <b id="binProg">${pr.p+pr.f}/${pr.t}</b></div>
         <div class="assign">Assigned to <span class="who2">${who?who+(mine?' (you)':''):'—'}</span></div>
       </div>
       <button class="xbtn" id="bmClose">×</button>
@@ -809,13 +902,22 @@ function renderBinModal(){
     <div class="bm-body">
       ${banner}
       <div class="bm-actions">
+        <button class="btn sm" data-scanstart="${bid}">📷 Scan to pick</button>
         <button class="btn sm" data-confirm="${bid}">✓ Confirm all ${cards.length} picked</button>
         <button class="btn ghost sm" data-complete="${bid}">Complete bin</button>
         <button class="btn ghost sm" data-reset="${bid}">Reset</button>
       </div>
+      <div id="scanPanel" class="scanpanel hidden">
+        <div class="scanpanel-top">
+          <span class="scanexp" id="scanExpect"></span>
+          <button class="btn ghost sm" data-scanstop>Stop scanning</button>
+        </div>
+        <div id="scanReader"></div>
+        <div class="scanfeed" id="scanFeed"></div>
+      </div>
       <div class="cardscroll"><table class="cardtbl">
         <thead><tr><th>URL</th><th>QR</th><th>Order #</th><th>Slot</th><th>Player</th><th>8AC #</th><th>Card Status</th><th>IPD</th><th>Validate</th></tr></thead>
-        <tbody>${rows}</tbody>
+        <tbody id="binTbody">${rows}</tbody>
       </table></div>
       <h4 class="sec">Operation log — Bin ${bid}</h4>
       ${logs}
@@ -829,6 +931,7 @@ function renderBinModal(){
     try{new QRCode(el,{text:c.url,width:58,height:58,correctLevel:QRCode.CorrectLevel.L});}
     catch(e){el.innerHTML='<span class="mono" style="font-size:8px;color:#000">QR</span>';}});
   const bq=$('binScanQR'); if(bq){bq.innerHTML='';try{new QRCode(bq,{text:'bin='+bid,width:90,height:90,correctLevel:QRCode.CorrectLevel.M});}catch(e){}}
+  if(scanState.active) updateScanHint();
 }
 function markDone(bid){const now=new Date();
   const picker=assignedTo[bid]||currentUser;   // credit the bin's assigned picker (supports split groups)
@@ -844,7 +947,7 @@ function markDone(bid){const now=new Date();
     persist(()=>DB.done({bin_id:bid,bin_name:name,cards,username:picker}));
   }
 }
-function afterAction(){if(modalBin)renderBinModal();renderPick();}
+function afterAction(){if(modalBin){scanState.active?updateBinTable():renderBinModal();}renderPick();}
 
 /* HISTORY / CALENDAR */
 function renderHistory(){
@@ -1129,6 +1232,8 @@ $('binModal').addEventListener('click',e=>{
   const fl=e.target.closest('[data-flag]'); if(fl){const c=CARDS.find(x=>x.id===fl.dataset.flag);
     if(pickState[c.id]==='flagged'){delete pickState[c.id];persist(()=>DB.pick(c.id,c.bin_id,null,c));}
     else{pickState[c.id]='flagged';logEvent(c,'flagged');persist(()=>DB.pick(c.id,c.bin_id,'flagged',c));}afterAction();return;}
+  const ss=e.target.closest('[data-scanstart]'); if(ss){startScan();return;}
+  if(e.target.closest('[data-scanstop]')){stopScan();return;}
   const cf=e.target.closest('[data-confirm]'); if(cf){const bid=+cf.dataset.confirm;
     (binMap[bid]||[]).forEach(c=>{if(pickState[c.id]!=='picked'){pickState[c.id]='picked';logEvent(c,'picked');persist(()=>DB.pick(c.id,c.bin_id,'picked',c));}});markDone(bid);afterAction();return;}
   const cp=e.target.closest('[data-complete]'); if(cp){const bid=+cp.dataset.complete;
