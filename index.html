@@ -562,6 +562,22 @@ function logEvent(c,action){const now=new Date();
 
 /* ===== NEON STORAGE (via Vercel /api) — falls back to in-memory when unreachable ===== */
 const DB={ enabled:true, token:null, ready:false };
+
+/* ===== Persisted session (survives refresh, expires after 15 min idle) ===== */
+const IDLE_MS=15*60*1000, SESS_KEY='vaultpick.session';
+let idleTimer=null, lastTouch=0, activityBound=false;
+const Sess={
+  save(){ try{ if(!currentUser)return; localStorage.setItem(SESS_KEY, JSON.stringify({token:DB.token,user:currentUser,role:currentRole,ts:Date.now()})); }catch(e){} },
+  load(){ try{ const raw=localStorage.getItem(SESS_KEY); if(!raw)return null; const o=JSON.parse(raw);
+    if(!o||!o.user) return null; if(Date.now()-(o.ts||0)>IDLE_MS){ Sess.clear(); return null; } return o; }catch(e){ return null; } },
+  clear(){ try{ localStorage.removeItem(SESS_KEY); }catch(e){} }
+};
+function resetIdle(){ clearTimeout(idleTimer); idleTimer=setTimeout(()=>doSignOut(true), IDLE_MS); }
+function touchSession(){ if(!currentUser)return; const now=Date.now(); resetIdle(); if(now-lastTouch<10000)return; lastTouch=now; Sess.save(); }
+function bindActivity(){ if(activityBound)return; activityBound=true;
+  ['click','keydown','pointerdown','touchstart','mousemove','wheel'].forEach(ev=>document.addEventListener(ev, touchSession, {passive:true}));
+  window.addEventListener('pagehide',()=>{ if(currentUser) Sess.save(); });
+  window.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden'&&currentUser) Sess.save(); }); }
 async function api(path,opts={}){
   const headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});
   if(DB.token)headers['Authorization']='Bearer '+DB.token;
@@ -622,6 +638,7 @@ function enterApp(){
   updateNotif();
   populateIPDFilter(); render();
   loadLiveData();   // Metabase reads (the cards to pick)
+  bindActivity(); Sess.save(); resetIdle();   // keep session alive across refresh
 }
 async function doLogin(){
   const u=$('u').value.trim().toLowerCase(), p=$('p').value;
@@ -652,8 +669,24 @@ $('notifBell').onclick=()=>{
 $('loginBtn').onclick=doLogin;
 $('p').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 $('u').addEventListener('keydown',e=>{if(e.key==='Enter')$('p').focus();});
-$('signout').onclick=()=>{currentUser=null;currentRole=null;trackerUser=null;DB.token=null;DB.ready=false;$('u').value='';$('p').value='';$('loginErr').textContent='';
-  $('adminTab').classList.add('hidden');$('notifBell').classList.add('hidden');closeBinModal();$('app').classList.add('hidden');$('login').classList.remove('hidden');};
+function doSignOut(auto){
+  currentUser=null;currentRole=null;trackerUser=null;DB.token=null;DB.ready=false;
+  Sess.clear(); clearTimeout(idleTimer);
+  $('u').value='';$('p').value='';$('loginErr').textContent = auto?'Signed out after 15 minutes of inactivity.':'';
+  $('adminTab').classList.add('hidden');$('notifBell').classList.add('hidden');closeBinModal();
+  $('app').classList.add('hidden');$('login').classList.remove('hidden');
+}
+$('signout').onclick=()=>doSignOut(false);
+function goHome(){
+  if(!currentUser) return;
+  closeBinModal(); const qm=$('qrModal'); if(qm) qm.classList.add('hidden');
+  BIN_GROUPS.forEach((_,i)=>collapsed[i]=true);
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+  const pt=document.querySelector('.tab[data-tab="pick"]'); if(pt)pt.classList.add('on');
+  activeTab='pick'; render();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+(function(){const hb=document.querySelector('.top .brand'); if(hb){hb.style.cursor='pointer'; hb.title='Home'; hb.setAttribute('role','button'); hb.addEventListener('click',goHome);}})();
 $('themeBtn').onclick=()=>{document.body.classList.toggle('light');
   $('themeBtn').textContent=document.body.classList.contains('light')?'☾':'☀';};
 $('showReset').onclick=()=>{$('resetForm').classList.toggle('hidden');$('rqErr').textContent='';$('rqOk').textContent='';};
@@ -802,9 +835,22 @@ function coreAc(v){
   s=s.replace(/^0+/,'');      // drop remaining leading zeros
   return s;
 }
-function beep(ok){try{const a=new (window.AudioContext||window.webkitAudioContext)();const o=a.createOscillator(),g=a.createGain();
-  o.connect(g);g.connect(a.destination);o.type='sine';o.frequency.value=ok?880:220;g.gain.value=.12;
-  o.start();o.stop(a.currentTime+ (ok?.12:.28));}catch(e){}}
+let _ac=null;
+function audioCtx(){try{_ac=_ac||new (window.AudioContext||window.webkitAudioContext)();if(_ac.state==='suspended')_ac.resume();return _ac;}catch(e){return null;}}
+function speak(text,delay){setTimeout(()=>{try{const u=new SpeechSynthesisUtterance(text);u.rate=1.05;u.volume=1;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}},delay||0);}
+function beep(ok){ ok?playMatch():playNoMatch(); }
+function playMatch(){const a=audioCtx();if(!a)return;const t=a.currentTime;   // coin / success chime
+  const seq=[[1318.51,0.00,0.11],[1760.00,0.07,0.11],[2637.02,0.15,0.26]];
+  seq.forEach(([f,off,dur])=>{const o=a.createOscillator(),g=a.createGain();o.type='triangle';o.frequency.value=f;
+    o.connect(g);g.connect(a.destination);const s=t+off;
+    g.gain.setValueAtTime(0.0001,s);g.gain.exponentialRampToValueAtTime(0.3,s+0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001,s+dur);o.start(s);o.stop(s+dur+0.02);});}
+function playNoMatch(){const a=audioCtx();if(a){const t=a.currentTime;   // double-beep …
+  [0,0.14].forEach(off=>{const o=a.createOscillator(),g=a.createGain();o.type='square';o.frequency.value=196;
+    o.connect(g);g.connect(a.destination);const s=t+off;
+    g.gain.setValueAtTime(0.0001,s);g.gain.exponentialRampToValueAtTime(0.2,s+0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001,s+0.1);o.start(s);o.stop(s+0.12);});}
+  speak('No match',300);}   // … then spoken "No match"
 let toastT=null;
 function toast(msg,ok){let el=$('vpToast'); if(!el){el=document.createElement('div');el.id='vpToast';document.body.appendChild(el);}
   el.className='toast '+(ok?'ok':'bad')+' show'; el.textContent=msg;
@@ -865,13 +911,18 @@ function onScanHit(text){
   const core=coreAc(text);
   const cards=binMap[modalBin]||[];
   if(!core){ setScanFeed('Unreadable code',false); beep(false); return; }
-  let target=cards.find(c=>pickState[c.id]!=='picked' && coreAc(c.ac)===core);
-  if(!target){
-    const dup=cards.find(c=>coreAc(c.ac)===core);
-    if(dup){ setScanFeed('Already picked · '+core, true); beep(true); }
-    else{ setScanFeed('No match in this bin · '+core, false); beep(false); }
-    return;
+  // The on-deck (green) card is the ONLY valid scan next — enforce pick order.
+  const ondeck=cards.find(c=>pickState[c.id]!=='picked' && pickState[c.id]!=='flagged');
+  if(!ondeck){ setScanFeed('All cards picked ✓', true); return; }
+  if(coreAc(ondeck.ac)!==core){
+    // scanned something else — say whether it's another card in this bin or unknown
+    const other=cards.find(c=>coreAc(c.ac)===core);
+    if(other && pickState[other.id]==='picked') setScanFeed('Already picked · '+core, false);
+    else if(other) setScanFeed('Wrong card · scan slot '+ondeck.slot+' ('+ondeck.ac+') next', false);
+    else setScanFeed('Wrong card · not '+ondeck.ac, false);
+    beep(false); return;
   }
+  const target=ondeck;
   pickState[target.id]='picked'; logEvent(target,'picked');
   persist(()=>DB.pick(target.id,target.bin_id,'picked',target));
   beep(true); setScanFeed('✓ Picked slot '+target.slot+' · '+core, true);
@@ -1337,6 +1388,18 @@ function openQR(cid){const c=CARDS.find(x=>x.id===cid);
   $('qrModal').classList.remove('hidden');}
 $('qrClose').onclick=()=>$('qrModal').classList.add('hidden');
 $('qrModal').addEventListener('click',e=>{if(e.target.id==='qrModal')$('qrModal').classList.add('hidden');});
+
+/* Restore session on refresh (unless idle > 15 min) */
+(function restoreSession(){
+  const o=Sess.load();
+  if(!o) return;
+  currentUser=o.user;
+  currentRole=o.role || (USERS[o.user]&&USERS[o.user].role) || 'employee';
+  DB.token=o.token||null;
+  if(USERS[currentUser]) USERS[currentUser]=Object.assign({},USERS[currentUser],{role:currentRole});
+  enterApp();
+  if(DB.token) hydrateFromDb();
+})();
 </script>
 </body>
 </html>
